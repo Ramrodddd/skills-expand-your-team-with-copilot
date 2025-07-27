@@ -1,15 +1,109 @@
 """
-MongoDB database configuration and setup for Mergington High School API
+In-memory database for Mergington High School API (for demonstration purposes)
 """
 
-from pymongo import MongoClient
 from argon2 import PasswordHasher
 
-# Connect to MongoDB
-client = MongoClient('mongodb://localhost:27017/')
-db = client['mergington_high']
-activities_collection = db['activities']
-teachers_collection = db['teachers']
+# In-memory storage
+activities_data = {}
+teachers_data = {}
+
+# Mock collection class to simulate MongoDB interface
+class MockCollection:
+    def __init__(self, data_store):
+        self.data_store = data_store
+    
+    def find(self, query=None):
+        if query is None or query == {}:
+            return [{"_id": k, **v} for k, v in self.data_store.items()]
+        
+        # Simple filtering for specific queries
+        results = []
+        for key, value in self.data_store.items():
+            if self._matches_query({"_id": key, **value}, query):
+                results.append({"_id": key, **value})
+        return results
+    
+    def find_one(self, query):
+        if "_id" in query:
+            key = query["_id"]
+            if key in self.data_store:
+                return {"_id": key, **self.data_store[key]}
+        return None
+    
+    def insert_one(self, doc):
+        key = doc.pop("_id")
+        self.data_store[key] = doc
+        return type('MockResult', (), {'inserted_id': key})()
+    
+    def update_one(self, query, update):
+        if "_id" in query:
+            key = query["_id"]
+            if key in self.data_store:
+                if "$push" in update:
+                    for field, value in update["$push"].items():
+                        if field not in self.data_store[key]:
+                            self.data_store[key][field] = []
+                        self.data_store[key][field].append(value)
+                if "$pull" in update:
+                    for field, value in update["$pull"].items():
+                        if field in self.data_store[key] and value in self.data_store[key][field]:
+                            self.data_store[key][field].remove(value)
+                return type('MockResult', (), {'modified_count': 1})()
+        return type('MockResult', (), {'modified_count': 0})()
+    
+    def count_documents(self, query):
+        return len(self.data_store)
+    
+    def aggregate(self, pipeline):
+        # Simple implementation for getting unique days
+        all_days = set()
+        for activity in self.data_store.values():
+            if "schedule_details" in activity and "days" in activity["schedule_details"]:
+                all_days.update(activity["schedule_details"]["days"])
+        return [{"_id": day} for day in sorted(all_days)]
+    
+    def _matches_query(self, doc, query):
+        for key, value in query.items():
+            # Handle nested field queries like "schedule_details.days"
+            if "." in key:
+                keys = key.split(".")
+                current = doc
+                for k in keys:
+                    if k not in current:
+                        return False
+                    current = current[k]
+                field_value = current
+            else:
+                if key not in doc:
+                    return False
+                field_value = doc[key]
+            
+            if isinstance(value, dict):
+                if "$in" in value:
+                    # For $in operator, check if any of the target values are in the field_value
+                    target_values = value["$in"]
+                    if isinstance(field_value, list):
+                        # If field_value is a list, check if any target values are in it
+                        if not any(item in field_value for item in target_values):
+                            return False
+                    else:
+                        # If field_value is not a list, check if it matches any target values
+                        if field_value not in target_values:
+                            return False
+                elif "$gte" in value:
+                    if field_value < value["$gte"]:
+                        return False
+                elif "$lte" in value:
+                    if field_value > value["$lte"]:
+                        return False
+            elif field_value != value:
+                return False
+        return True
+
+# Create mock collections
+activities_collection = MockCollection(activities_data)
+teachers_collection = MockCollection(teachers_data)
 
 # Methods
 def hash_password(password):
@@ -163,6 +257,17 @@ initial_activities = {
         },
         "max_participants": 16,
         "participants": ["william@mergington.edu", "jacob@mergington.edu"]
+    },
+    "Manga Maniacs": {
+        "description": "Explore the fantastic stories of the most interesting characters from Japanese Manga (graphic novels).",
+        "schedule": "Tuesdays at 7:00 PM",
+        "schedule_details": {
+            "days": ["Tuesday"],
+            "start_time": "19:00",
+            "end_time": "20:00"
+        },
+        "max_participants": 15,
+        "participants": []
     }
 }
 
